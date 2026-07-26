@@ -1,10 +1,10 @@
 import os
 import sqlite3
 from pathlib import Path
+import pandas as pd
 from dotenv import load_dotenv
 import streamlit as st
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 # ----------------------------------------------------
 # 1. Configuración de la página web
@@ -20,7 +20,7 @@ st.subheader("Tu concesionaria de confianza")
 st.markdown("---")
 
 # ----------------------------------------------------
-# 2. Cargar Variables de Entorno y Conexión
+# 2. Cargar Variables de Entorno y Configuración API
 # ----------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
@@ -32,6 +32,9 @@ API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     st.error("❌ No se encontró la GEMINI_API_KEY ni en Secrets ni en el archivo .env")
     st.stop()
+
+# Configurar la API key en el SDK
+genai.configure(api_key=API_KEY)
 
 # Nombre del archivo SQLite
 DB_PATH = BASE_DIR / "concesionaria.db"
@@ -107,7 +110,40 @@ def guardar_lead(nombre, telefono, email, auto_interes):
 lista_autos = obtener_autos()
 
 # ----------------------------------------------------
-# 4. Barra Lateral (Sidebar): Formulario de Contacto
+# 4. Formatear Inventario y Cachear Modelo Gemini (Mejoras 1 y 9)
+# ----------------------------------------------------
+# Formatear el inventario a texto plano para reducir tokens y mejorar comprensión
+inventario_texto = "\n".join(
+    [
+        f"- {a.get('marca', '')} {a.get('modelo', '')} | Año: {a.get('anio', '')} | Color: {a.get('color', '')} | Precio: ${a.get('precio', 0):,.2f}"
+        for a in lista_autos
+    ]
+)
+
+@st.cache_resource
+def obtener_modelo(text_inventario):
+    instrucciones = f"""
+    Eres un asesor comercial experto y amable para una concesionaria de autos.
+
+    Inventario disponible:
+    {text_inventario}
+
+    Reglas:
+    - Responde únicamente usando el inventario disponible.
+    - Si un auto no existe, sé amable y ofrece uno similar del inventario.
+    - Si el cliente muestra interés claro en comprar o probar un auto, invítalo a completar el formulario de la barra lateral.
+    - Sé claro, profesional y conciso.
+    """
+
+    return genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=instrucciones
+    )
+
+modelo = obtener_modelo(inventario_texto)
+
+# ----------------------------------------------------
+# 5. Barra Lateral (Sidebar): Formulario y Botón Limpiar (Mejora 6)
 # ----------------------------------------------------
 with st.sidebar:
     st.header("📅 Agendar Cita / Prueba de Manejo")
@@ -131,15 +167,43 @@ with st.sidebar:
                 if exito:
                     st.success("✅ ¡Gracias! Un asesor comercial se pondrá en contacto pronto.")
 
-# Ver inventario
-with st.expander("📋 Ver inventario disponible"):
-    st.json(lista_autos)
+    st.markdown("---")
+    # Botón para limpiar la conversación (Mejora 6)
+    if st.button("🗑 Limpiar conversación", use_container_width=True):
+        st.session_state.mensajes = [
+            {
+                "role": "assistant",
+                "content": "👋 Hola nuevamente. ¿En qué puedo ayudarte?"
+            }
+        ]
+        st.rerun()
 
 # ----------------------------------------------------
-# 5. Memoria del Chat y Configuración de Gemini
+# 6. Mostrar Métricas e Inventario en Pandas (Mejoras 3 y 8)
+# ----------------------------------------------------
+st.metric("Autos disponibles en catálogo", len(lista_autos))
+
+with st.expander("📋 Ver inventario disponible"):
+    if lista_autos:
+        df_autos = pd.DataFrame(lista_autos)
+        st.dataframe(
+            df_autos,
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No hay vehículos cargados en la base de datos.")
+
+# ----------------------------------------------------
+# 7. Memoria del Chat y Saludo Inicial (Mejora 5)
 # ----------------------------------------------------
 if "mensajes" not in st.session_state:
-    st.session_state.mensajes = []
+    st.session_state.mensajes = [
+        {
+            "role": "assistant",
+            "content": "👋 ¡Hola! Soy el asesor virtual de la concesionaria. ¿Qué vehículo estás buscando?"
+        }
+    ]
 
 # Mostrar historial previo en pantalla
 for msg in st.session_state.mensajes:
@@ -147,7 +211,7 @@ for msg in st.session_state.mensajes:
         st.markdown(msg["content"])
 
 # ----------------------------------------------------
-# 6. Entrada del Usuario y Respuesta de la IA
+# 8. Entrada del Usuario y Respuesta con Limite e Intercepción de Errores (Mejoras 2, 4 y 7)
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     # Guardar y mostrar mensaje del usuario
@@ -156,45 +220,37 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Pensando respuesta..."):
+        with st.spinner("🚗 Buscando el vehículo ideal..."):
             try:
-                # Instanciar el cliente con la versión de API 'v1' para asegurar estabilidad
-                client = genai.Client(api_key=API_KEY)
+                # Limitar el historial a los últimos 6 mensajes para ahorrar tokens (Mejora 2)
+                historial_reciente = st.session_state.mensajes[-6:]
 
-                instrucciones = f"""
-                Eres un asesor comercial experto y amable para una concesionaria de autos.
-                Inventario disponible en la base de datos:
-                {lista_autos}
+                history_gemini = []
+                for m in historial_reciente[:-1]:
+                    role = "user" if m["role"] == "user" else "model"
+                    history_gemini.append({
+                        "role": role,
+                        "parts": [m["content"]]
+                    })
 
-                Reglas:
-                1. Responde basándote ÚNICAMENTE en el inventario provisto.
-                2. Si piden algo que no está, sé amable y ofrece una alternativa cercana.
-                3. Si el cliente muestra interés claro en comprar o probar un auto, recuérdale que puede dejar sus datos en el formulario de la barra lateral para agendar una cita.
-                4. Sé claro, profesional y conciso.
-                """
-
-                # Formatear historial para la API
-                historial_gemini = []
-                for m in st.session_state.mensajes:
-                    role_gemini = "user" if m["role"] == "user" else "model"
-                    historial_gemini.append(
-                        types.Content(
-                            role=role_gemini,
-                            parts=[types.Part.from_text(text=m["content"])]
-                        )
-                    )
-
-                # Intentamos con gemini-2.0-flash
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=historial_gemini,
-                    config=types.GenerateContentConfig(
-                        system_instruction=instrucciones
-                    )
-                )
+                # Iniciar el chat usando el modelo cacheado (Mejora 1)
+                chat = modelo.start_chat(history=history_gemini)
+                response = chat.send_message(prompt)
 
                 st.markdown(response.text)
                 st.session_state.mensajes.append({"role": "assistant", "content": response.text})
 
+            # Manejo detallado de errores (Mejora 4)
             except Exception as e:
-                st.error(f"❌ Error al comunicarse con Gemini: {e}")
+                error = str(e)
+                if "429" in error:
+                    st.warning(
+                        "⚠️ Se alcanzó el límite de uso de Gemini. "
+                        "Esperá unos minutos o revisá la cuota de tu API."
+                    )
+                elif "401" in error:
+                    st.error("❌ La API Key no es válida.")
+                elif "403" in error:
+                    st.error("❌ La API Key no tiene permisos.")
+                else:
+                    st.error(f"❌ Ocurrió un error inesperado: {error}")(f"❌ Error al comunicarse con Gemini: {e}")
