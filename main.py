@@ -26,14 +26,12 @@ BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# Buscar clave primero en Secrets de Streamlit Cloud y luego en .env local
 API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 if not API_KEY:
     st.error("❌ No se encontró la GEMINI_API_KEY ni en Secrets ni en el archivo .env")
     st.stop()
 
-# Configurar la API key en el SDK
 genai.configure(api_key=API_KEY)
 
 # Nombre del archivo SQLite
@@ -43,7 +41,6 @@ DB_PATH = BASE_DIR / "concesionaria.db"
 # 3. Funciones de Base de Datos con SQLite
 # ----------------------------------------------------
 def inicializar_db():
-    """Crea las tablas automáticas si no existen en SQLite."""
     conexion = sqlite3.connect(DB_PATH)
     cursor = conexion.cursor()
     
@@ -110,9 +107,8 @@ def guardar_lead(nombre, telefono, email, auto_interes):
 lista_autos = obtener_autos()
 
 # ----------------------------------------------------
-# 4. Formatear Inventario y Cachear Modelo Gemini (Mejoras 1 y 9)
+# 4. Formatear Inventario e Instrucciones
 # ----------------------------------------------------
-# Formatear el inventario a texto plano para reducir tokens y mejorar comprensión
 inventario_texto = "\n".join(
     [
         f"- {a.get('marca', '')} {a.get('modelo', '')} | Año: {a.get('anio', '')} | Color: {a.get('color', '')} | Precio: ${a.get('precio', 0):,.2f}"
@@ -135,15 +131,16 @@ def obtener_modelo(text_inventario):
     - Sé claro, profesional y conciso.
     """
 
+    # Usamos la sintaxis completa del modelo para evitar el error 404
     return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="models/gemini-1.5-flash",
         system_instruction=instrucciones
     )
 
 modelo = obtener_modelo(inventario_texto)
 
 # ----------------------------------------------------
-# 5. Barra Lateral (Sidebar): Formulario y Botón Limpiar (Mejora 6)
+# 5. Barra Lateral (Sidebar): Formulario y Botón Limpiar
 # ----------------------------------------------------
 with st.sidebar:
     st.header("📅 Agendar Cita / Prueba de Manejo")
@@ -168,7 +165,6 @@ with st.sidebar:
                     st.success("✅ ¡Gracias! Un asesor comercial se pondrá en contacto pronto.")
 
     st.markdown("---")
-    # Botón para limpiar la conversación (Mejora 6)
     if st.button("🗑 Limpiar conversación", use_container_width=True):
         st.session_state.mensajes = [
             {
@@ -179,7 +175,7 @@ with st.sidebar:
         st.rerun()
 
 # ----------------------------------------------------
-# 6. Mostrar Métricas e Inventario en Pandas (Mejoras 3 y 8)
+# 6. Mostrar Métricas e Inventario en Pandas
 # ----------------------------------------------------
 st.metric("Autos disponibles en catálogo", len(lista_autos))
 
@@ -195,7 +191,7 @@ with st.expander("📋 Ver inventario disponible"):
         st.info("No hay vehículos cargados en la base de datos.")
 
 # ----------------------------------------------------
-# 7. Memoria del Chat y Saludo Inicial (Mejora 5)
+# 7. Memoria del Chat y Saludo Inicial
 # ----------------------------------------------------
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = [
@@ -205,16 +201,14 @@ if "mensajes" not in st.session_state:
         }
     ]
 
-# Mostrar historial previo en pantalla
 for msg in st.session_state.mensajes:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 # ----------------------------------------------------
-# 8. Entrada del Usuario y Respuesta con Limite e Intercepción de Errores (Mejoras 2, 4 y 7)
+# 8. Entrada del Usuario y Respuesta
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
-    # Guardar y mostrar mensaje del usuario
     st.session_state.mensajes.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -222,7 +216,6 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("🚗 Buscando el vehículo ideal..."):
             try:
-                # Limitar el historial a los últimos 6 mensajes para ahorrar tokens (Mejora 2)
                 historial_reciente = st.session_state.mensajes[-6:]
 
                 history_gemini = []
@@ -233,24 +226,20 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                         "parts": [m["content"]]
                     })
 
-                # Iniciar el chat usando el modelo cacheado (Mejora 1)
                 chat = modelo.start_chat(history=history_gemini)
                 response = chat.send_message(prompt)
 
                 st.markdown(response.text)
                 st.session_state.mensajes.append({"role": "assistant", "content": response.text})
 
-            # Manejo detallado de errores (Mejora 4)
+            # Manejo de errores corregido sin el error de sintaxis DeltaGenerator
             except Exception as e:
                 error = str(e)
                 if "429" in error:
-                    st.warning(
-                        "⚠️ Se alcanzó el límite de uso de Gemini. "
-                        "Esperá unos minutos o revisá la cuota de tu API."
-                    )
+                    st.warning("⚠️ Se alcanzó el límite de uso de Gemini. Por favor aguardá unos segundos.")
                 elif "401" in error:
                     st.error("❌ La API Key no es válida.")
                 elif "403" in error:
                     st.error("❌ La API Key no tiene permisos.")
                 else:
-                    st.error(f"❌ Ocurrió un error inesperado: {error}")(f"❌ Error al comunicarse con Gemini: {e}")
+                    st.error(f"❌ Ocurrió un error inesperado: {error}")
