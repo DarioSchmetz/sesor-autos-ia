@@ -4,7 +4,8 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ----------------------------------------------------
 # 1. Configuración de la página web
@@ -20,7 +21,7 @@ st.subheader("Tu concesionaria de confianza")
 st.markdown("---")
 
 # ----------------------------------------------------
-# 2. Cargar Variables de Entorno y Configuración API
+# 2. Cargar Variables de Entorno y Cliente GenAI
 # ----------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
@@ -32,13 +33,13 @@ if not API_KEY:
     st.error("❌ No se encontró la GEMINI_API_KEY ni en Secrets ni en el archivo .env")
     st.stop()
 
-genai.configure(api_key=API_KEY)
+# Inicializar el nuevo cliente SDK oficial de Google
+client = genai.Client(api_key=API_KEY)
 
-# Nombre del archivo SQLite
 DB_PATH = BASE_DIR / "concesionaria.db"
 
 # ----------------------------------------------------
-# 3. Funciones de Base de Datos con SQLite
+# 3. Base de Datos SQLite
 # ----------------------------------------------------
 def inicializar_db():
     conexion = sqlite3.connect(DB_PATH)
@@ -116,31 +117,69 @@ inventario_texto = "\n".join(
     ]
 )
 
-@st.cache_resource
-def obtener_modelo(text_inventario):
-    instrucciones = f"""
-    Eres un asesor comercial experto y amable para una concesionaria de autos.
+instrucciones_sistema = f"""
+Eres un asesor comercial experto y amable para una concesionaria de autos.
 
-    Inventario disponible:
-    {text_inventario}
+Inventario disponible:
+{inventario_texto}
 
-    Reglas:
-    - Responde únicamente usando el inventario disponible.
-    - Si un auto no existe, sé amable y ofrece uno similar del inventario.
-    - Si el cliente muestra interés claro en comprar o probar un auto, invítalo a completar el formulario de la barra lateral.
-    - Sé claro, profesional y conciso.
+Reglas:
+- Responde únicamente usando el inventario disponible.
+- Si un auto no existe, sé amable y ofrece uno similar del inventario.
+- Si el cliente muestra interés claro en comprar o probar un auto, invítalo a completar el formulario de la barra lateral.
+- Sé claro, profesional y conciso.
+"""
+
+MODELOS_DISPONIBLES = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+]
+
+def obtener_respuesta_ia(mensajes_historial, nuevo_prompt):
     """
-
-    # Usamos la sintaxis completa del modelo para evitar el error 404
-    return genai.GenerativeModel(
-        model_name="models/gemini-1.5-flash",
-        system_instruction=instrucciones
+    Construye el contenido con historial y prueba modelos 
+    ordenados hasta obtener una respuesta satisfactoria.
+    """
+    contents = []
+    for msg in mensajes_historial:
+        role_genai = "user" if msg["role"] == "user" else "model"
+        contents.append(
+            types.Content(
+                role=role_genai,
+                parts=[types.Part.from_text(text=msg["content"])]
+            )
+        )
+    
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=nuevo_prompt)]
+        )
     )
 
-modelo = obtener_modelo(inventario_texto)
+    config = types.GenerateContentConfig(
+        system_instruction=instrucciones_sistema
+    )
+
+    ultimo_error = None
+
+    for model_name in MODELOS_DISPONIBLES:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            return response.text
+        except Exception as e:
+            ultimo_error = e
+            continue
+
+    raise ultimo_error
 
 # ----------------------------------------------------
-# 5. Barra Lateral (Sidebar): Formulario y Botón Limpiar
+# 5. Barra Lateral (Sidebar)
 # ----------------------------------------------------
 with st.sidebar:
     st.header("📅 Agendar Cita / Prueba de Manejo")
@@ -165,7 +204,7 @@ with st.sidebar:
                     st.success("✅ ¡Gracias! Un asesor comercial se pondrá en contacto pronto.")
 
     st.markdown("---")
-    if st.button("🗑 Limpiar conversación", use_container_width=True):
+    if st.button("🗑 Limpiar conversación"):
         st.session_state.mensajes = [
             {
                 "role": "assistant",
@@ -175,7 +214,7 @@ with st.sidebar:
         st.rerun()
 
 # ----------------------------------------------------
-# 6. Mostrar Métricas e Inventario en Pandas
+# 6. Métrica e Inventario
 # ----------------------------------------------------
 st.metric("Autos disponibles en catálogo", len(lista_autos))
 
@@ -184,14 +223,13 @@ with st.expander("📋 Ver inventario disponible"):
         df_autos = pd.DataFrame(lista_autos)
         st.dataframe(
             df_autos,
-            use_container_width=True,
             hide_index=True
         )
     else:
         st.info("No hay vehículos cargados en la base de datos.")
 
 # ----------------------------------------------------
-# 7. Memoria del Chat y Saludo Inicial
+# 7. Memoria e Interfaz del Chat
 # ----------------------------------------------------
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = [
@@ -206,7 +244,7 @@ for msg in st.session_state.mensajes:
         st.markdown(msg["content"])
 
 # ----------------------------------------------------
-# 8. Entrada del Usuario y Respuesta
+# 8. Envío de Mensaje
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     st.session_state.mensajes.append({"role": "user", "content": prompt})
@@ -216,30 +254,18 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("🚗 Buscando el vehículo ideal..."):
             try:
-                historial_reciente = st.session_state.mensajes[-6:]
+                historial_reciente = st.session_state.mensajes[-7:-1]
+                
+                respuesta_texto = obtener_respuesta_ia(historial_reciente, prompt)
 
-                history_gemini = []
-                for m in historial_reciente[:-1]:
-                    role = "user" if m["role"] == "user" else "model"
-                    history_gemini.append({
-                        "role": role,
-                        "parts": [m["content"]]
-                    })
+                st.markdown(respuesta_texto)
+                st.session_state.mensajes.append({"role": "assistant", "content": respuesta_texto})
 
-                chat = modelo.start_chat(history=history_gemini)
-                response = chat.send_message(prompt)
-
-                st.markdown(response.text)
-                st.session_state.mensajes.append({"role": "assistant", "content": response.text})
-
-            # Manejo de errores corregido sin el error de sintaxis DeltaGenerator
             except Exception as e:
                 error = str(e)
-                if "429" in error:
-                    st.warning("⚠️ Se alcanzó el límite de uso de Gemini. Por favor aguardá unos segundos.")
-                elif "401" in error:
-                    st.error("❌ La API Key no es válida.")
-                elif "403" in error:
-                    st.error("❌ La API Key no tiene permisos.")
+                if "429" in error or "RESOURCE_EXHAUSTED" in error:
+                    st.warning("⚠️ Se agotó la cuota de consultas momentáneamente. Aguardá unos segundos.")
+                elif "401" in error or "403" in error or "API_KEY_INVALID" in error:
+                    st.error("❌ Ocurrió un problema de autenticación con la API Key.")
                 else:
                     st.error(f"❌ Ocurrió un error inesperado: {error}")
