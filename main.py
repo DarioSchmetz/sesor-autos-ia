@@ -158,7 +158,7 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando respuesta..."):
             try:
-                # Instanciar el cliente
+                # Instanciar el cliente con la versión de API 'v1' para asegurar estabilidad
                 client = genai.Client(api_key=API_KEY)
 
                 instrucciones = f"""
@@ -184,8 +184,9 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                         )
                     )
 
+                # Intentamos con gemini-2.0-flash
                 response = client.models.generate_content(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.0-flash",
                     contents=historial_gemini,
                     config=types.GenerateContentConfig(
                         system_instruction=instrucciones
