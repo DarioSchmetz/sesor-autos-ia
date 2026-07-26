@@ -185,7 +185,7 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                     )
 
                 response = client.models.generate_content(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.0-flash",
                     contents=historial_gemini,
                     config=types.GenerateContentConfig(
                         system_instruction=instrucciones
