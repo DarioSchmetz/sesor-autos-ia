@@ -1,5 +1,3 @@
-flask
-google-generativeai
-mysql-connector-python
-gunicorn
+streamlit
+google-genai
 python-dotenv
