@@ -26,15 +26,14 @@ BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+# Buscar clave primero en st.secrets (para Streamlit Cloud) y luego en .env (para local)
+API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 if not API_KEY:
-    st.error("❌ No se encontró la GEMINI_API_KEY en el archivo .env")
+    st.error("❌ No se encontró la GEMINI_API_KEY ni en Secrets ni en el archivo .env")
     st.stop()
 
-client = genai.Client(api_key=API_KEY)
-
-# Nombre del archivo SQLite que se va a crear en tu carpeta
+# Nombre del archivo SQLite
 DB_PATH = BASE_DIR / "concesionaria.db"
 
 # ----------------------------------------------------
@@ -45,7 +44,6 @@ def inicializar_db():
     conexion = sqlite3.connect(DB_PATH)
     cursor = conexion.cursor()
     
-    # Tabla de Autos
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS auto (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +55,6 @@ def inicializar_db():
         )
     ''')
     
-    # Tabla de Leads / Interesados
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cliente_interesado (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +69,6 @@ def inicializar_db():
     conexion.commit()
     conexion.close()
 
-# Inicializamos las tablas
 inicializar_db()
 
 @st.cache_data(ttl=600)
@@ -145,26 +141,7 @@ with st.expander("📋 Ver inventario disponible"):
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = []
 
-if "chat_session" not in st.session_state:
-    instrucciones = f"""
-    Eres un asesor comercial experto y amable para una concesionaria de autos.
-    Inventario disponible en la base de datos:
-    {lista_autos}
-
-    Reglas:
-    1. Responde basándote ÚNICAMENTE en el inventario provisto.
-    2. Si piden algo que no está, sé amable y ofrece una alternativa cercana.
-    3. Si el cliente muestra interés claro en comprar o probar un auto, recuérdale que puede dejar sus datos en el formulario de la barra lateral para agendar una cita.
-    4. Sé claro, profesional y conciso.
-    """
-    
-    st.session_state.chat_session = client.chats.create(
-        model="gemini-flash-latest",
-        config=types.GenerateContentConfig(
-            system_instruction=instrucciones
-        )
-    )
-
+# Mostrar historial
 for msg in st.session_state.mensajes:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -173,6 +150,7 @@ for msg in st.session_state.mensajes:
 # 6. Entrada del Usuario y Respuesta de la IA
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
+    # Agregar mensaje del usuario
     st.session_state.mensajes.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -180,8 +158,42 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando respuesta..."):
             try:
-                response = st.session_state.chat_session.send_message(prompt)
+                # Instanciar cliente al momento
+                client = genai.Client(api_key=API_KEY)
+
+                instrucciones = f"""
+                Eres un asesor comercial experto y amable para una concesionaria de autos.
+                Inventario disponible en la base de datos:
+                {lista_autos}
+
+                Reglas:
+                1. Responde basándote ÚNICAMENTE en el inventario provisto.
+                2. Si piden algo que no está, sé amable y ofrece una alternativa cercana.
+                3. Si el cliente muestra interés claro en comprar o probar un auto, recuérdale que puede dejar sus datos en el formulario de la barra lateral para agendar una cita.
+                4. Sé claro, profesional y conciso.
+                """
+
+                # Armar el historial para Gemini
+                historial_gemini = []
+                for m in st.session_state.mensajes:
+                    role_gemini = "user" if m["role"] == "user" else "model"
+                    historial_gemini.append(
+                        types.Content(
+                            role=role_gemini,
+                            parts=[types.Part.from_text(text=m["content"])]
+                        )
+                    )
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=historial_gemini,
+                    config=types.GenerateContentConfig(
+                        system_instruction=instrucciones
+                    )
+                )
+
                 st.markdown(response.text)
                 st.session_state.mensajes.append({"role": "assistant", "content": response.text})
+
             except Exception as e:
                 st.error(f"❌ Error al comunicarse con Gemini: {e}")
