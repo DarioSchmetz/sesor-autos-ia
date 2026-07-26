@@ -225,4 +225,4 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                 st.session_state.mensajes.append({"role": "assistant", "content": respuesta_texto})
 
             except Exception as e:
-                st.error(f"❌ Error al consultar la IA: {e}")ió un error inesperado: {error}")
+                st.error(f"❌ Error al consultar la IA: {e}")
