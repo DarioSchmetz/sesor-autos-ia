@@ -4,8 +4,7 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 import streamlit as st
-from google import genai
-from google.genai import types
+from groq import Groq
 
 # ----------------------------------------------------
 # 1. Configuración de la página web
@@ -21,20 +20,19 @@ st.subheader("Tu concesionaria de confianza")
 st.markdown("---")
 
 # ----------------------------------------------------
-# 2. Cargar Variables de Entorno y Cliente GenAI
+# 2. Cargar Variables de Entorno y Cliente Groq
 # ----------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
-API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 
 if not API_KEY:
-    st.error("❌ No se encontró la GEMINI_API_KEY ni en Secrets ni en el archivo .env")
+    st.error("❌ No se encontró la GROQ_API_KEY ni en Secrets ni en el archivo .env")
     st.stop()
 
-# Inicializar el nuevo cliente SDK oficial de Google
-client = genai.Client(api_key=API_KEY)
+client = Groq(api_key=API_KEY)
 
 DB_PATH = BASE_DIR / "concesionaria.db"
 
@@ -117,7 +115,7 @@ inventario_texto = "\n".join(
     ]
 )
 
-instrucciones_sistema = f"""
+system_prompt = f"""
 Eres un asesor comercial experto y amable para una concesionaria de autos.
 
 Inventario disponible:
@@ -127,56 +125,8 @@ Reglas:
 - Responde únicamente usando el inventario disponible.
 - Si un auto no existe, sé amable y ofrece uno similar del inventario.
 - Si el cliente muestra interés claro en comprar o probar un auto, invítalo a completar el formulario de la barra lateral.
-- Sé claro, profesional y conciso.
+- Sé claro, profesional y conciso en idioma español.
 """
-
-MODELOS_DISPONIBLES = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
-]
-
-def obtener_respuesta_ia(mensajes_historial, nuevo_prompt):
-    """
-    Construye el contenido con historial y prueba modelos 
-    ordenados hasta obtener una respuesta satisfactoria.
-    """
-    contents = []
-    for msg in mensajes_historial:
-        role_genai = "user" if msg["role"] == "user" else "model"
-        contents.append(
-            types.Content(
-                role=role_genai,
-                parts=[types.Part.from_text(text=msg["content"])]
-            )
-        )
-    
-    contents.append(
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=nuevo_prompt)]
-        )
-    )
-
-    config = types.GenerateContentConfig(
-        system_instruction=instrucciones_sistema
-    )
-
-    ultimo_error = None
-
-    for model_name in MODELOS_DISPONIBLES:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config
-            )
-            return response.text
-        except Exception as e:
-            ultimo_error = e
-            continue
-
-    raise ultimo_error
 
 # ----------------------------------------------------
 # 5. Barra Lateral (Sidebar)
@@ -244,7 +194,7 @@ for msg in st.session_state.mensajes:
         st.markdown(msg["content"])
 
 # ----------------------------------------------------
-# 8. Envío de Mensaje
+# 8. Envío de Mensaje con Groq
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     st.session_state.mensajes.append({"role": "user", "content": prompt})
@@ -254,18 +204,25 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("🚗 Buscando el vehículo ideal..."):
             try:
-                historial_reciente = st.session_state.mensajes[-7:-1]
+                # Armar el historial para la API de Groq
+                messages_for_api = [{"role": "system", "content": system_prompt}]
                 
-                respuesta_texto = obtener_respuesta_ia(historial_reciente, prompt)
+                # Tomar los últimos mensajes de la conversación
+                for m in st.session_state.mensajes[-6:]:
+                    messages_for_api.append({
+                        "role": m["role"],
+                        "content": m["content"]
+                    })
+
+                chat_completion = client.chat.completions.create(
+                    messages=messages_for_api,
+                    model="llama-3.1-8b-instant",
+                )
+
+                respuesta_texto = chat_completion.choices[0].message.content
 
                 st.markdown(respuesta_texto)
                 st.session_state.mensajes.append({"role": "assistant", "content": respuesta_texto})
 
             except Exception as e:
-                error = str(e)
-                if "429" in error or "RESOURCE_EXHAUSTED" in error:
-                    st.warning("⚠️ Se agotó la cuota de consultas momentáneamente. Aguardá unos segundos.")
-                elif "401" in error or "403" in error or "API_KEY_INVALID" in error:
-                    st.error("❌ Ocurrió un problema de autenticación con la API Key.")
-                else:
-                    st.error(f"❌ Ocurrió un error inesperado: {error}")
+                st.error(f"❌ Error al consultar la IA: {e}")ió un error inesperado: {error}")
