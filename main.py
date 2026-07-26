@@ -1,10 +1,10 @@
 import os
+import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 import streamlit as st
 from google import genai
 from google.genai import types
-import mysql.connector
 
 # ----------------------------------------------------
 # 1. Configuración de la página web
@@ -20,17 +20,13 @@ st.subheader("Tu concesionaria de confianza")
 st.markdown("---")
 
 # ----------------------------------------------------
-# 2. Cargar Variables de Entorno (.env)
+# 2. Cargar Variables de Entorno y Conexión
 # ----------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
-DB_NAME = os.getenv("DB_NAME")
 
 if not API_KEY:
     st.error("❌ No se encontró la GEMINI_API_KEY en el archivo .env")
@@ -38,53 +34,81 @@ if not API_KEY:
 
 client = genai.Client(api_key=API_KEY)
 
+# Nombre del archivo SQLite que se va a crear en tu carpeta
+DB_PATH = BASE_DIR / "concesionaria.db"
+
 # ----------------------------------------------------
-# 3. Funciones para MySQL
+# 3. Funciones de Base de Datos con SQLite
 # ----------------------------------------------------
+def inicializar_db():
+    """Crea las tablas automáticas si no existen en SQLite."""
+    conexion = sqlite3.connect(DB_PATH)
+    cursor = conexion.cursor()
+    
+    # Tabla de Autos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auto (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            marca TEXT NOT NULL,
+            modelo TEXT NOT NULL,
+            color TEXT,
+            anio INTEGER,
+            precio REAL
+        )
+    ''')
+    
+    # Tabla de Leads / Interesados
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cliente_interesado (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            telefono TEXT NOT NULL,
+            email TEXT,
+            auto_interes TEXT,
+            fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    conexion.commit()
+    conexion.close()
+
+# Inicializamos las tablas
+inicializar_db()
+
 @st.cache_data(ttl=600)
 def obtener_autos():
     try:
-        conexion = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASS,
-            database=DB_NAME
-        )
-        cursor = conexion.cursor(dictionary=True)
+        conexion = sqlite3.connect(DB_PATH)
+        conexion.row_factory = sqlite3.Row
+        cursor = conexion.cursor()
+        
         cursor.execute("SELECT * FROM auto")
-        autos = cursor.fetchall()
+        filas = cursor.fetchall()
+        
+        autos = [dict(fila) for fila in filas]
         conexion.close()
         return autos
     except Exception as e:
-        st.error(f"❌ Error al conectar con MySQL: {e}")
+        st.error(f"❌ Error al conectar con SQLite: {e}")
         return []
 
 def guardar_lead(nombre, telefono, email, auto_interes):
     try:
-        conexion = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASS,
-            database=DB_NAME
-        )
+        conexion = sqlite3.connect(DB_PATH)
         cursor = conexion.cursor()
         query = """
             INSERT INTO cliente_interesado (nombre, telefono, email, auto_interes)
-            VALUES (%s, %s, %s, %s)
+            VALUES (?, ?, ?, ?)
         """
         cursor.execute(query, (nombre, telefono, email, auto_interes))
         conexion.commit()
         conexion.close()
         return True
     except Exception as e:
-        st.error(f"❌ Error al guardar en la base de datos: {e}")
+        st.error(f"❌ Error al guardar en SQLite: {e}")
         return False
 
 lista_autos = obtener_autos()
-
-if not lista_autos:
-    st.warning("⚠️ No se pudieron cargar los autos desde la base de datos.")
-    st.stop()
 
 # ----------------------------------------------------
 # 4. Barra Lateral (Sidebar): Formulario de Contacto
@@ -111,8 +135,8 @@ with st.sidebar:
                 if exito:
                     st.success("✅ ¡Gracias! Un asesor comercial se pondrá en contacto pronto.")
 
-# Desplegable en la pantalla principal para inspeccionar el catálogo de autos
-with st.expander("📋 Ver inventario disponible en MySQL"):
+# Ver inventario
+with st.expander("📋 Ver inventario disponible"):
     st.json(lista_autos)
 
 # ----------------------------------------------------
@@ -124,7 +148,7 @@ if "mensajes" not in st.session_state:
 if "chat_session" not in st.session_state:
     instrucciones = f"""
     Eres un asesor comercial experto y amable para una concesionaria de autos.
-    Inventario disponible en MySQL:
+    Inventario disponible en la base de datos:
     {lista_autos}
 
     Reglas:
