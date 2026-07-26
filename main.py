@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# Buscar clave primero en st.secrets (para Streamlit Cloud) y luego en .env (para local)
+# Buscar clave primero en Secrets de Streamlit Cloud y luego en .env local
 API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 if not API_KEY:
@@ -141,7 +141,7 @@ with st.expander("📋 Ver inventario disponible"):
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = []
 
-# Mostrar historial
+# Mostrar historial previo en pantalla
 for msg in st.session_state.mensajes:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -150,7 +150,7 @@ for msg in st.session_state.mensajes:
 # 6. Entrada del Usuario y Respuesta de la IA
 # ----------------------------------------------------
 if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
-    # Agregar mensaje del usuario
+    # Guardar y mostrar mensaje del usuario
     st.session_state.mensajes.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -158,7 +158,7 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando respuesta..."):
             try:
-                # Instanciar cliente al momento
+                # Instanciar el cliente
                 client = genai.Client(api_key=API_KEY)
 
                 instrucciones = f"""
@@ -173,7 +173,7 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                 4. Sé claro, profesional y conciso.
                 """
 
-                # Armar el historial para Gemini
+                # Formatear historial para la API
                 historial_gemini = []
                 for m in st.session_state.mensajes:
                     role_gemini = "user" if m["role"] == "user" else "model"
@@ -185,7 +185,7 @@ if prompt := st.chat_input("Escribí tu pregunta sobre nuestros autos..."):
                     )
 
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-1.5-flash",
                     contents=historial_gemini,
                     config=types.GenerateContentConfig(
                         system_instruction=instrucciones
